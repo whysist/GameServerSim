@@ -1,2 +1,7 @@
-server\__init__.py
-server\__pycache__
+/server/__init__.py
+/server/__pycache__/
+/load_tester/__init__.py
+venv/
+/scripts/__init__.py
+/load_tester/__pycache__/
+/analysis/__init__.py
