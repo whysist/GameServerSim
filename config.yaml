@@ -1,0 +1,38 @@
+server:
+  host: "127.0.0.1"
+  port: 8000
+
+load_test:
+  duration_seconds: 60
+
+  player_counts:
+    - 10
+    - 50
+    - 100
+    - 250
+    - 500
+
+  ramp_up_seconds: 10
+
+player:
+  action_count:
+    min: 5
+    max: 15
+
+  action_delay_ms:
+    min: 50
+    max: 500
+
+scenarios:
+  normal_player:
+    weight: 70
+
+  competitive_player:
+    weight: 20
+
+  reconnecting_player:
+    weight: 10
+
+output:
+  directory: "results"
+  raw_metrics: "results/metrics.csv"
