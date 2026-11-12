@@ -1,10 +1,12 @@
 import asyncio
+import random
 from collections import Counter
 
 from load_tester.config import LoadTestConfig
 from load_tester.limits import ensure_fd_limit
 from load_tester.metrics import MetricsCollector
 from load_tester.player import VirtualPlayer
+from load_tester.scenarios import assign_scenarios, create_scenario
 
 
 class LoadTestRunner:
@@ -24,6 +26,21 @@ class LoadTestRunner:
             f"duration {self.config.duration_seconds}s)"
         )
 
+        scenario_names = assign_scenarios(
+            self.config.player_count,
+            self.config.scenario_weights,
+            random.Random(self.config.seed),
+        )
+
+        mix = Counter(scenario_names)
+        print(
+            "Player mix: "
+            + ", ".join(
+                f"{count} {name}"
+                for name, count in mix.most_common()
+            )
+        )
+
         players = [
             VirtualPlayer(
                 player_id=player_id,
@@ -37,10 +54,15 @@ class LoadTestRunner:
                 ),
                 min_actions=self.config.min_actions,
                 max_actions=self.config.max_actions,
+                scenario=create_scenario(
+                    scenario_name,
+                    self.config.min_actions,
+                    self.config.max_actions,
+                ),
             )
-            for player_id in range(
-                1,
-                self.config.player_count + 1
+            for player_id, scenario_name in enumerate(
+                scenario_names,
+                start=1,
             )
         ]
 

@@ -8,8 +8,7 @@ import httpx
 from load_tester.metrics import MetricsCollector
 from load_tester.scenarios import (
     NormalPlayerScenario,
-    CompetitivePlayerScenario,
-    ReconnectingPlayerScenario,
+    Scenario,
 )
 
 
@@ -24,6 +23,7 @@ class VirtualPlayer:
         max_action_delay_ms: int = 500,
         min_actions: int = 5,
         max_actions: int = 15,
+        scenario: Optional[Scenario] = None,
     ):
         self.player_id = player_id
         self.server_url = server_url
@@ -32,7 +32,7 @@ class VirtualPlayer:
         self.min_action_delay_ms = min_action_delay_ms
         self.max_action_delay_ms = max_action_delay_ms
 
-        self.scenario = NormalPlayerScenario(
+        self.scenario = scenario or NormalPlayerScenario(
             min_actions=min_actions,
             max_actions=max_actions,
         )
@@ -61,6 +61,7 @@ class VirtualPlayer:
 
             self.metrics.record(
                 player_id=self.player_id,
+                scenario=self.scenario.name,
                 endpoint=endpoint,
                 latency_ms=latency_ms,
                 status_code=response.status_code,
@@ -80,6 +81,7 @@ class VirtualPlayer:
 
             self.metrics.record(
                 player_id=self.player_id,
+                scenario=self.scenario.name,
                 endpoint=endpoint,
                 latency_ms=latency_ms,
                 status_code=0,
@@ -251,12 +253,22 @@ class VirtualPlayer:
         # 5. Perform gameplay actions
         actions = self.scenario.get_actions()
 
-        for action in actions:
+        # Reconnecting players may drop mid-game: pick the point in the
+        # game (after which action) where the reconnect happens.
+        reconnect_after = None
+        if actions and self.scenario.should_reconnect():
+            reconnect_after = random.randrange(len(actions))
+
+        for index, action in enumerate(actions):
 
             await self.player_action(
                 client,
                 action,
             )
+
+            if index == reconnect_after:
+                # 6. Simulated drop and reconnect mid-game
+                await self.reconnect(client)
 
             delay = random.uniform(
                 self.min_action_delay_ms,
@@ -266,14 +278,6 @@ class VirtualPlayer:
             await asyncio.sleep(
                 delay / 1000
             )
-
-        # 6. Occasionally simulate reconnect
-        if isinstance(
-            self.scenario,
-            ReconnectingPlayerScenario,
-        ):
-            if self.scenario.should_reconnect():
-                await self.reconnect(client)
 
         # 7. End game
         response = await self.end_game(client)

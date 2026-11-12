@@ -8,6 +8,7 @@ from datetime import datetime
 class RequestMetric:
     timestamp: str
     player_id: int
+    scenario: str
     endpoint: str
     latency_ms: float
     status_code: int
@@ -23,6 +24,7 @@ class MetricsCollector:
     def record(
         self,
         player_id: int,
+        scenario: str,
         endpoint: str,
         latency_ms: float,
         status_code: int,
@@ -32,6 +34,7 @@ class MetricsCollector:
         metric = RequestMetric(
             timestamp=datetime.now().isoformat(),
             player_id=player_id,
+            scenario=scenario,
             endpoint=endpoint,
             latency_ms=latency_ms,
             status_code=status_code,
