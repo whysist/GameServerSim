@@ -1,8 +1,12 @@
 import asyncio
+import random
+from collections import Counter
 
 from load_tester.config import LoadTestConfig
+from load_tester.limits import ensure_fd_limit
 from load_tester.metrics import MetricsCollector
 from load_tester.player import VirtualPlayer
+from load_tester.scenarios import assign_scenarios, create_scenario
 
 
 class LoadTestRunner:
@@ -13,9 +17,28 @@ class LoadTestRunner:
 
     async def run(self):
 
+        ensure_fd_limit(self.config.player_count)
+
         print(
             f"Starting load test with "
-            f"{self.config.player_count} players"
+            f"{self.config.player_count} players "
+            f"(ramp-up {self.config.ramp_up_seconds}s, "
+            f"duration {self.config.duration_seconds}s)"
+        )
+
+        scenario_names = assign_scenarios(
+            self.config.player_count,
+            self.config.scenario_weights,
+            random.Random(self.config.seed),
+        )
+
+        mix = Counter(scenario_names)
+        print(
+            "Player mix: "
+            + ", ".join(
+                f"{count} {name}"
+                for name, count in mix.most_common()
+            )
         )
 
         players = [
@@ -31,26 +54,64 @@ class LoadTestRunner:
                 ),
                 min_actions=self.config.min_actions,
                 max_actions=self.config.max_actions,
+                scenario=create_scenario(
+                    scenario_name,
+                    self.config.min_actions,
+                    self.config.max_actions,
+                ),
             )
-            for player_id in range(
-                1,
-                self.config.player_count + 1
+            for player_id, scenario_name in enumerate(
+                scenario_names,
+                start=1,
             )
         ]
 
-        start_time = asyncio.get_event_loop().time()
+        loop = asyncio.get_running_loop()
 
-        await asyncio.gather(
+        start_time = loop.time()
+
+        # Players stop starting new games after this point.
+        deadline = start_time + self.config.duration_seconds
+
+        # Spread player start times evenly across the ramp-up window.
+        ramp_step = (
+            self.config.ramp_up_seconds / self.config.player_count
+            if self.config.player_count > 0
+            else 0
+        )
+
+        # return_exceptions=True: one player crashing (e.g. running out of
+        # file descriptors) must not abort every other player's session.
+        outcomes = await asyncio.gather(
             *[
-                player.play()
-                for player in players
-            ]
+                player.play(
+                    start_delay=index * ramp_step,
+                    deadline=deadline,
+                )
+                for index, player in enumerate(players)
+            ],
+            return_exceptions=True,
         )
 
-        elapsed = (
-            asyncio.get_event_loop().time()
-            - start_time
-        )
+        crashed = [
+            outcome
+            for outcome in outcomes
+            if isinstance(outcome, BaseException)
+        ]
+
+        if crashed:
+            reasons = Counter(
+                f"{type(error).__name__}: {error}"
+                for error in crashed
+            )
+            print(
+                f"WARNING: {len(crashed)} of {len(players)} players "
+                f"crashed inside the load generator:"
+            )
+            for reason, count in reasons.most_common(5):
+                print(f"  {count} x {reason}")
+
+        elapsed = loop.time() - start_time
 
         total_requests = len(
             self.metrics.get_metrics()

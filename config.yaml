@@ -14,7 +14,12 @@ load_test:
 
   ramp_up_seconds: 10
 
+  # Optional: fixes which player IDs get which player type.
+  # seed: 42
+
 player:
+  # action_count applies to normal players only. Competitive (15-30)
+  # and reconnecting (5-10) players keep their own ranges.
   action_count:
     min: 5
     max: 15
@@ -23,6 +28,8 @@ player:
     min: 50
     max: 500
 
+# Player-type mix. Weights are relative; players are assigned in these
+# exact proportions (rounded), not by random draw.
 scenarios:
   normal_player:
     weight: 70

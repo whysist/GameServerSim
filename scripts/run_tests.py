@@ -12,8 +12,8 @@ from load_tester.runner import LoadTestRunner
 
 async def main():
 
-    config = LoadTestConfig(
-        server_url="http://127.0.0.1:8000",
+    # Settings come from config.yaml.
+    config = LoadTestConfig.from_yaml(
         player_count=10,
     )
 

@@ -12,9 +12,6 @@ from load_tester.config import LoadTestConfig
 from load_tester.runner import LoadTestRunner
 
 
-RESULTS_DIR = "results"
-
-
 EXPERIMENTS = {
     "baseline": [
         10,
@@ -43,13 +40,16 @@ async def run_experiment(
     player_counts: list[int],
 ):
 
+    # Settings come from config.yaml; only the player count varies.
+    base_config = LoadTestConfig.from_yaml()
+
     print("\n")
     print("=" * 60)
     print(f"EXPERIMENT: {experiment_name.upper()}")
     print("=" * 60)
 
     experiment_dir = os.path.join(
-        RESULTS_DIR,
+        base_config.results_dir,
         experiment_name,
     )
 
@@ -68,8 +68,7 @@ async def run_experiment(
         )
         print("-" * 60)
 
-        config = LoadTestConfig(
-            server_url="http://127.0.0.1:8000",
+        config = LoadTestConfig.from_yaml(
             player_count=player_count,
         )
 

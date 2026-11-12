@@ -1,14 +1,14 @@
 import asyncio
 import random
 import time
+from typing import Optional
 
 import httpx
 
 from load_tester.metrics import MetricsCollector
 from load_tester.scenarios import (
     NormalPlayerScenario,
-    CompetitivePlayerScenario,
-    ReconnectingPlayerScenario,
+    Scenario,
 )
 
 
@@ -23,6 +23,7 @@ class VirtualPlayer:
         max_action_delay_ms: int = 500,
         min_actions: int = 5,
         max_actions: int = 15,
+        scenario: Optional[Scenario] = None,
     ):
         self.player_id = player_id
         self.server_url = server_url
@@ -31,7 +32,7 @@ class VirtualPlayer:
         self.min_action_delay_ms = min_action_delay_ms
         self.max_action_delay_ms = max_action_delay_ms
 
-        self.scenario = NormalPlayerScenario(
+        self.scenario = scenario or NormalPlayerScenario(
             min_actions=min_actions,
             max_actions=max_actions,
         )
@@ -60,6 +61,7 @@ class VirtualPlayer:
 
             self.metrics.record(
                 player_id=self.player_id,
+                scenario=self.scenario.name,
                 endpoint=endpoint,
                 latency_ms=latency_ms,
                 status_code=response.status_code,
@@ -79,11 +81,14 @@ class VirtualPlayer:
 
             self.metrics.record(
                 player_id=self.player_id,
+                scenario=self.scenario.name,
                 endpoint=endpoint,
                 latency_ms=latency_ms,
                 status_code=0,
                 success=False,
-                error=str(error),
+                # Some exceptions (e.g. httpx timeouts) have an empty
+                # message, so always record the exception type too.
+                error=f"{type(error).__name__}: {error}".rstrip(": "),
             )
 
             return None
@@ -178,7 +183,23 @@ class VirtualPlayer:
             },
         )
 
-    async def play(self):
+    async def play(
+        self,
+        start_delay: float = 0.0,
+        deadline: Optional[float] = None,
+    ):
+        """
+        Run this player's session.
+
+        start_delay: seconds to wait before logging in (used for ramp-up).
+        deadline:    event-loop time after which no new game is started.
+                     None means play exactly one game.
+        """
+
+        if start_delay > 0:
+            await asyncio.sleep(start_delay)
+
+        loop = asyncio.get_running_loop()
 
         async with httpx.AsyncClient() as client:
 
@@ -194,49 +215,71 @@ class VirtualPlayer:
             if response is None:
                 return
 
-            # 3. Enter matchmaking
-            response = await self.matchmaking(client)
+            # 3+. Play games until the deadline (or once if no deadline).
+            while True:
 
-            if response is None:
-                return
+                completed = await self.play_one_game(client)
 
-            # Small delay before game starts
-            await asyncio.sleep(
-                random.uniform(0.1, 0.5)
+                if deadline is None or loop.time() >= deadline:
+                    break
+
+                if not completed:
+                    # Back off briefly so a failing server isn't hammered
+                    # by a tight retry loop.
+                    await asyncio.sleep(1.0)
+
+    async def play_one_game(self, client) -> bool:
+        """Play a single game. Returns True if it reached game end."""
+
+        self.match_id = None
+
+        # 3. Enter matchmaking
+        response = await self.matchmaking(client)
+
+        if response is None:
+            return False
+
+        # Small delay before game starts
+        await asyncio.sleep(
+            random.uniform(0.1, 0.5)
+        )
+
+        # 4. Start game
+        response = await self.start_game(client)
+
+        if response is None:
+            return False
+
+        # 5. Perform gameplay actions
+        actions = self.scenario.get_actions()
+
+        # Reconnecting players may drop mid-game: pick the point in the
+        # game (after which action) where the reconnect happens.
+        reconnect_after = None
+        if actions and self.scenario.should_reconnect():
+            reconnect_after = random.randrange(len(actions))
+
+        for index, action in enumerate(actions):
+
+            await self.player_action(
+                client,
+                action,
             )
 
-            # 4. Start game
-            response = await self.start_game(client)
+            if index == reconnect_after:
+                # 6. Simulated drop and reconnect mid-game
+                await self.reconnect(client)
 
-            if response is None:
-                return
+            delay = random.uniform(
+                self.min_action_delay_ms,
+                self.max_action_delay_ms,
+            )
 
-            # 5. Perform gameplay actions
-            actions = self.scenario.get_actions()
+            await asyncio.sleep(
+                delay / 1000
+            )
 
-            for action in actions:
+        # 7. End game
+        response = await self.end_game(client)
 
-                await self.player_action(
-                    client,
-                    action,
-                )
-
-                delay = random.uniform(
-                    self.min_action_delay_ms,
-                    self.max_action_delay_ms,
-                )
-
-                await asyncio.sleep(
-                    delay / 1000
-                )
-
-            # 6. Occasionally simulate reconnect
-            if isinstance(
-                self.scenario,
-                ReconnectingPlayerScenario,
-            ):
-                if self.scenario.should_reconnect():
-                    await self.reconnect(client)
-
-            # 7. End game
-            await self.end_game(client)
+        return response is not None
