@@ -1,6 +1,7 @@
 import asyncio
 import random
 import time
+from typing import Optional
 
 import httpx
 
@@ -83,7 +84,9 @@ class VirtualPlayer:
                 latency_ms=latency_ms,
                 status_code=0,
                 success=False,
-                error=str(error),
+                # Some exceptions (e.g. httpx timeouts) have an empty
+                # message, so always record the exception type too.
+                error=f"{type(error).__name__}: {error}".rstrip(": "),
             )
 
             return None
@@ -178,7 +181,23 @@ class VirtualPlayer:
             },
         )
 
-    async def play(self):
+    async def play(
+        self,
+        start_delay: float = 0.0,
+        deadline: Optional[float] = None,
+    ):
+        """
+        Run this player's session.
+
+        start_delay: seconds to wait before logging in (used for ramp-up).
+        deadline:    event-loop time after which no new game is started.
+                     None means play exactly one game.
+        """
+
+        if start_delay > 0:
+            await asyncio.sleep(start_delay)
+
+        loop = asyncio.get_running_loop()
 
         async with httpx.AsyncClient() as client:
 
@@ -194,49 +213,69 @@ class VirtualPlayer:
             if response is None:
                 return
 
-            # 3. Enter matchmaking
-            response = await self.matchmaking(client)
+            # 3+. Play games until the deadline (or once if no deadline).
+            while True:
 
-            if response is None:
-                return
+                completed = await self.play_one_game(client)
 
-            # Small delay before game starts
-            await asyncio.sleep(
-                random.uniform(0.1, 0.5)
+                if deadline is None or loop.time() >= deadline:
+                    break
+
+                if not completed:
+                    # Back off briefly so a failing server isn't hammered
+                    # by a tight retry loop.
+                    await asyncio.sleep(1.0)
+
+    async def play_one_game(self, client) -> bool:
+        """Play a single game. Returns True if it reached game end."""
+
+        self.match_id = None
+
+        # 3. Enter matchmaking
+        response = await self.matchmaking(client)
+
+        if response is None:
+            return False
+
+        # Small delay before game starts
+        await asyncio.sleep(
+            random.uniform(0.1, 0.5)
+        )
+
+        # 4. Start game
+        response = await self.start_game(client)
+
+        if response is None:
+            return False
+
+        # 5. Perform gameplay actions
+        actions = self.scenario.get_actions()
+
+        for action in actions:
+
+            await self.player_action(
+                client,
+                action,
             )
 
-            # 4. Start game
-            response = await self.start_game(client)
+            delay = random.uniform(
+                self.min_action_delay_ms,
+                self.max_action_delay_ms,
+            )
 
-            if response is None:
-                return
+            await asyncio.sleep(
+                delay / 1000
+            )
 
-            # 5. Perform gameplay actions
-            actions = self.scenario.get_actions()
+        # 6. Occasionally simulate reconnect
+        if isinstance(
+            self.scenario,
+            ReconnectingPlayerScenario,
+        ):
+            if self.scenario.should_reconnect():
+                await self.reconnect(client)
 
-            for action in actions:
+        # 7. End game
+        response = await self.end_game(client)
 
-                await self.player_action(
-                    client,
-                    action,
-                )
-
-                delay = random.uniform(
-                    self.min_action_delay_ms,
-                    self.max_action_delay_ms,
-                )
-
-                await asyncio.sleep(
-                    delay / 1000
-                )
-
-            # 6. Occasionally simulate reconnect
-            if isinstance(
-                self.scenario,
-                ReconnectingPlayerScenario,
-            ):
-                if self.scenario.should_reconnect():
-                    await self.reconnect(client)
-
-            # 7. End game
-            await self.end_game(client)
+        return response is not None

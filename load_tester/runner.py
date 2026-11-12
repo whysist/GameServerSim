@@ -1,6 +1,8 @@
 import asyncio
+from collections import Counter
 
 from load_tester.config import LoadTestConfig
+from load_tester.limits import ensure_fd_limit
 from load_tester.metrics import MetricsCollector
 from load_tester.player import VirtualPlayer
 
@@ -13,9 +15,13 @@ class LoadTestRunner:
 
     async def run(self):
 
+        ensure_fd_limit(self.config.player_count)
+
         print(
             f"Starting load test with "
-            f"{self.config.player_count} players"
+            f"{self.config.player_count} players "
+            f"(ramp-up {self.config.ramp_up_seconds}s, "
+            f"duration {self.config.duration_seconds}s)"
         )
 
         players = [
@@ -38,19 +44,52 @@ class LoadTestRunner:
             )
         ]
 
-        start_time = asyncio.get_event_loop().time()
+        loop = asyncio.get_running_loop()
 
-        await asyncio.gather(
+        start_time = loop.time()
+
+        # Players stop starting new games after this point.
+        deadline = start_time + self.config.duration_seconds
+
+        # Spread player start times evenly across the ramp-up window.
+        ramp_step = (
+            self.config.ramp_up_seconds / self.config.player_count
+            if self.config.player_count > 0
+            else 0
+        )
+
+        # return_exceptions=True: one player crashing (e.g. running out of
+        # file descriptors) must not abort every other player's session.
+        outcomes = await asyncio.gather(
             *[
-                player.play()
-                for player in players
-            ]
+                player.play(
+                    start_delay=index * ramp_step,
+                    deadline=deadline,
+                )
+                for index, player in enumerate(players)
+            ],
+            return_exceptions=True,
         )
 
-        elapsed = (
-            asyncio.get_event_loop().time()
-            - start_time
-        )
+        crashed = [
+            outcome
+            for outcome in outcomes
+            if isinstance(outcome, BaseException)
+        ]
+
+        if crashed:
+            reasons = Counter(
+                f"{type(error).__name__}: {error}"
+                for error in crashed
+            )
+            print(
+                f"WARNING: {len(crashed)} of {len(players)} players "
+                f"crashed inside the load generator:"
+            )
+            for reason, count in reasons.most_common(5):
+                print(f"  {count} x {reason}")
+
+        elapsed = loop.time() - start_time
 
         total_requests = len(
             self.metrics.get_metrics()
